@@ -1,12 +1,13 @@
 """
-HOS Inbox Bot – Telegram → Notion
-==================================
-Zachytáva všetko čo mu pošleš a ukladá do Notion databázy.
+HOS Inbox Bot – Telegram → Claude → Notion
+===========================================
+Zachytáva správy, posiela ich Claude, odpoveď ukladá do Notion.
 
-NASTAVENIE – doplň tieto tri hodnoty:
-1. TELEGRAM_TOKEN   – od BotFather
-2. NOTION_TOKEN     – z notion.so/profile/integrations → tvoja integrácia → Internal Integration Secret
-3. NOTION_DB_ID     – ID tvojej Notion databázy (z URL)
+NASTAVENIE – env premenné na Railway:
+  TELEGRAM_TOKEN   – od BotFather
+  NOTION_TOKEN     – Internal Integration Secret
+  NOTION_DB_ID     – ID Notion databázy (z URL)
+  ANTHROPIC_API_KEY – z console.anthropic.com
 
 SPUSTENIE:
   pip install -r requirements.txt
@@ -17,20 +18,33 @@ import os
 import logging
 import datetime
 import tempfile
+import anthropic
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 from notion_client import Client
 
-# ─── DOPLŇ TOTO ───────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-NOTION_TOKEN   = os.environ.get("NOTION_TOKEN")
-NOTION_DB_ID   = os.environ.get("NOTION_DB_ID")
+# ─── ENV ──────────────────────────────────────────────────────────────────────
+TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN")
+NOTION_TOKEN      = os.environ.get("NOTION_TOKEN")
+NOTION_DB_ID      = os.environ.get("NOTION_DB_ID")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 # ──────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s – %(message)s")
 log = logging.getLogger(__name__)
 
-notion = Client(auth=NOTION_TOKEN)
+notion         = Client(auth=NOTION_TOKEN)
+claude_client  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+# ─── SYSTEM PROMPT ────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """Si holistický kouč a myšlienkový partner Willa.
+Pristupuješ integrálne – zohľadňuješ praktické, emocionálne, systémové aj hodnotové dimenzie.
+Keď Will niečo pošle:
+- Ak je to myšlienka alebo problém: reflektuj, polož jednu otázku alebo navrhni jeden konkrétny krok
+- Ak je to úloha alebo zámer: pomôž ho sformulovať jasne a akciovateľne
+- Ak je to link alebo dokument: zhrň podstatu a relevantnosť pre Life OS
+Buď stručný, direktívny, bez omáčky. Odpovedaj v slovenčine."""
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 def now_iso():
@@ -41,15 +55,30 @@ def now_str():
     return datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
 
 
+def ask_claude(user_message: str) -> str:
+    """Pošle správu Claude a vráti odpoveď."""
+    try:
+        response = claude_client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}]
+        )
+        return response.content[0].text
+    except Exception as e:
+        log.error(f"Claude error: {e}")
+        return f"[Claude nedostupný: {e}]"
+
+
 def save_to_notion(name, typ, content, source="telegram"):
     """Uloží záznam do Notion databázy."""
     notion.pages.create(
         parent={"database_id": NOTION_DB_ID},
         properties={
-            "Name":    {"title":  [{"text": {"content": name}}]},
-            "Type":    {"select": {"name": typ}},
-            "Date":    {"date":   {"start": now_iso()}},
-            "Source":  {"select": {"name": source}},
+            "Name":   {"title":  [{"text": {"content": name}}]},
+            "Type":   {"select": {"name": typ}},
+            "Date":   {"date":   {"start": now_iso()}},
+            "Source": {"select": {"name": source}},
         },
         children=[
             {
@@ -69,7 +98,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 HOS Inbox aktívny.\n\n"
         "Pošli mi:\n"
-        "📝 Text / myšlienku\n"
+        "📝 Text / myšlienku → Claude odpovie\n"
         "🎤 Hlasovú správu\n"
         "📄 PDF / dokument\n"
         "🖼 Fotku (s popisom)\n"
@@ -84,12 +113,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     typ = "LINK" if is_link else "NOTE"
     name = f"{typ} – {now_str()}"
 
+    # Získaj odpoveď od Claude
+    await update.message.reply_text("🤔 Spracovávam...")
+    claude_response = ask_claude(text)
+
+    # Obsah do Notion: vstup + odpoveď
+    notion_content = f"📥 Vstup:\n{text}\n\n🤖 Claude:\n{claude_response}"
+
     try:
-        save_to_notion(name=name, typ=typ, content=text)
-        await update.message.reply_text(f"✅ {typ} uložený do Notion")
+        save_to_notion(name=name, typ=typ, content=notion_content)
+        await update.message.reply_text(
+            f"🤖 {claude_response}\n\n✅ Uložené do Notion"
+        )
     except Exception as e:
         log.error(e)
-        await update.message.reply_text(f"❌ Chyba: {e}")
+        # Aj keď Notion zlyhá, Claude odpoveď pošleme
+        await update.message.reply_text(
+            f"🤖 {claude_response}\n\n⚠️ Notion zlyhal: {e}"
+        )
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,10 +146,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Hlasová správa zachytená: {now_str()}\n"
             f"Veľkosť: {size} bytes\n"
             f"File ID: {update.message.voice.file_id}\n\n"
-            f"[Hlasová správa – pre transkripciu pripoj Whisper API]"
+            f"[Whisper transkripcia – TODO]"
         )
         save_to_notion(name=name, typ="VOICE", content=content)
-        await update.message.reply_text("🎤 Hlas zachytený v Notion")
+        await update.message.reply_text("🎤 Hlas zachytený v Notion\n⚠️ Transkripcia zatiaľ nie je aktívna")
     except Exception as e:
         log.error(e)
         await update.message.reply_text(f"❌ Chyba: {e}")
