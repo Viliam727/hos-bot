@@ -72,7 +72,7 @@ def ask_claude(user_message: str) -> str:
 
 def make_paragraph_blocks(content: str) -> list:
     """Rozdelí dlhý text na bloky po 2000 znakov."""
-    chunks = [content[i:i+2000] for i in range(0, len(content), 2000)]
+    chunks = [content[i:i+1900] for i in range(0, len(content), 1900)]
     return [
         {
             "object": "block",
