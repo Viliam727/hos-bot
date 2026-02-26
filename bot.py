@@ -70,6 +70,21 @@ def ask_claude(user_message: str) -> str:
         return f"[Claude nedostupný: {e}]"
 
 
+def make_paragraph_blocks(content: str) -> list:
+    """Rozdelí dlhý text na bloky po 2000 znakov."""
+    chunks = [content[i:i+2000] for i in range(0, len(content), 2000)]
+    return [
+        {
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {
+                "rich_text": [{"type": "text", "text": {"content": chunk}}]
+            }
+        }
+        for chunk in chunks
+    ]
+
+
 def save_to_notion(name, typ, content, source="telegram"):
     """Uloží záznam do Notion databázy."""
     notion.pages.create(
@@ -80,15 +95,7 @@ def save_to_notion(name, typ, content, source="telegram"):
             "Date":   {"date":   {"start": now_iso()}},
             "Source": {"select": {"name": source}},
         },
-        children=[
-            {
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": content}}]
-                }
-            }
-        ]
+        children=make_paragraph_blocks(content)
     )
 
 
