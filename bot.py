@@ -59,7 +59,7 @@ def ask_claude(user_message: str) -> str:
     """Pošle správu Claude a vráti odpoveď."""
     try:
         response = claude_client.messages.create(
-            model="claude-opus-4-6",
+            model="claude-haiku-4-5-20251001",
             max_tokens=1024,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}]
